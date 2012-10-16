@@ -23,13 +23,14 @@
 extern bool enable_geqo;
 extern int	geqo_threshold;
 
+
 /* Hook for plugins to replace standard_join_search() */
 typedef RelOptInfo *(*join_search_hook_type) (PlannerInfo *root,
 														  int levels_needed,
 														  List *initial_rels);
 extern PGDLLIMPORT join_search_hook_type join_search_hook;
 
-
+extern RelOptInfo *path_map(PlannerInfo *root, MockPath *mockpath);
 extern RelOptInfo *make_one_rel(PlannerInfo *root, List *joinlist);
 extern RelOptInfo *standard_join_search(PlannerInfo *root, int levels_needed,
 					 List *initial_rels);
@@ -73,6 +74,8 @@ extern List *expand_indexqual_conditions(IndexOptInfo *index,
 							List *clausegroups);
 extern void check_partial_indexes(PlannerInfo *root, RelOptInfo *rel);
 extern List *flatten_clausegroups_list(List *clausegroups);
+extern void qp_create_index_paths(PlannerInfo *root, RelOptInfo* rel, Node * col);
+extern void qp_create_bmheap_paths(PlannerInfo *root, RelOptInfo* rel, MockPath * mockpath);
 
 /*
  * orindxpath.c
@@ -90,6 +93,15 @@ extern void create_tidscan_paths(PlannerInfo *root, RelOptInfo *rel);
  * joinpath.c
  *	   routines to create join paths
  */
+extern void qp_add_paths_to_joinrel(PlannerInfo *root,
+						RelOptInfo *joinrel,
+						RelOptInfo *outerrel,
+						RelOptInfo *innerrel,
+						JoinType jointype,
+						SpecialJoinInfo *sjinfo,
+						List *restrictlist,
+						MockPath *mockpath);
+
 extern void add_paths_to_joinrel(PlannerInfo *root, RelOptInfo *joinrel,
 					 RelOptInfo *outerrel, RelOptInfo *innerrel,
 					 JoinType jointype, SpecialJoinInfo *sjinfo,
@@ -99,6 +111,7 @@ extern void add_paths_to_joinrel(PlannerInfo *root, RelOptInfo *joinrel,
  * joinrels.c
  *	  routines to determine which relations to join
  */
+extern RelOptInfo *qp_make_join_rel(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2, MockPath *mockpath);
 extern void join_search_one_level(PlannerInfo *root, int level);
 extern RelOptInfo *make_join_rel(PlannerInfo *root,
 			  RelOptInfo *rel1, RelOptInfo *rel2);

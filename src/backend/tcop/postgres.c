@@ -199,13 +199,84 @@ static bool IsTransactionStmtList(List *parseTrees);
 static void drop_unnamed_stmt(void);
 static void SigHupHandler(SIGNAL_ARGS);
 static void log_disconnections(int code, Datum arg);
-
-
+static List *qp_queryplan_create(Query *query, int cursorOptions,
+							 ParamListInfo boundParams, MockPath *mockpath);
+			  
 /* ----------------------------------------------------------------
  *		routines to obtain user input
  * ----------------------------------------------------------------
  */
 
+/*******************************************************************
+ *
+ *                     New Functions
+ *
+ ******************************************************************/
+/*
+ * Generate plan for a mackpath
+ *
+ */
+static List *
+qp_queryplan_create(Query *query, int cursorOptions, ParamListInfo boundParams, MockPath *mockpath)
+{
+	List *stmt_list = NIL;
+	/*
+	ListCell* query_list = list_head(querytrees);
+	Query	   *query = (Query *) lfirst(query_list);
+	*/
+	PlannedStmt *plan;
+	
+	/* Planner must have a snapshot in case it calls user-defined functions. */
+	Assert(ActiveSnapshotSet());
+
+	TRACE_POSTGRESQL_QUERY_PLAN_START();
+
+	if (log_planner_stats)
+		ResetUsage();
+		
+	plan = qp_planner(query, cursorOptions, boundParams, mockpath);
+
+	if (log_planner_stats)
+		ShowUsage("PLANNER STATISTICS");
+
+#ifdef COPY_PARSE_PLAN_TREES
+	/* Optional debugging check: pass plan output through copyObject() */
+	{
+		PlannedStmt *new_plan = (PlannedStmt *) copyObject(plan);
+
+		/*
+		 * equal() currently does not have routines to compare Plan nodes, so
+		 * don't try to test equality here.  Perhaps fix someday?
+		 */
+#ifdef NOT_USED
+		/* This checks both copyObject() and the equal() routines... */
+		if (!equal(new_plan, plan))
+			elog(WARNING, "copyObject() failed to produce an equal plan tree");
+		else
+#endif
+			plan = new_plan;
+	}
+#endif
+
+	/*
+	 * Print plan if debugging.
+	 */
+	if (Debug_print_plan)
+		elog_node_display(LOG, "plan", plan, Debug_pretty_print);
+
+	TRACE_POSTGRESQL_QUERY_PLAN_DONE();
+	
+	stmt_list = lappend(stmt_list, (Node *)plan);
+	
+	return stmt_list;
+}
+
+/******************************************************************
+ *
+ *                          END
+ *
+ *****************************************************************/
+ 
 /* ----------------
  *	InteractiveBackend() is called for user interactive connections
  *
@@ -822,7 +893,6 @@ pg_plan_queries(List *querytrees, int cursorOptions, ParamListInfo boundParams)
 	return stmt_list;
 }
 
-
 /*
  * exec_simple_query
  *
@@ -839,6 +909,8 @@ exec_simple_query(const char *query_string)
 	bool		was_logged = false;
 	bool		isTopLevel;
 	char		msec_str[32];
+	bool qp_showplan = false;
+	bool isqpstmt=false;
 
 
 	/*
@@ -878,13 +950,13 @@ exec_simple_query(const char *query_string)
 	 * Switch to appropriate context for constructing parsetrees.
 	 */
 	oldcontext = MemoryContextSwitchTo(MessageContext);
-
-	/*
+  
+  /*
 	 * Do basic parsing of the query or queries (this should be safe even if
 	 * we are in aborted transaction state!)
 	 */
 	parsetree_list = pg_parse_query(query_string);
-
+		
 	/* Log immediately if dictated by log_statement */
 	if (check_log_statement(parsetree_list))
 	{
@@ -931,12 +1003,9 @@ exec_simple_query(const char *query_string)
 		 * destination.
 		 */
 		commandTag = CreateCommandTag(parsetree);
-
-		set_ps_display(commandTag, false);
-
-		BeginCommand(commandTag, dest);
-
-		/*
+    set_ps_display(commandTag, false);
+    BeginCommand(commandTag, dest);
+    /*
 		 * If we are in an aborted transaction, reject all commands except
 		 * COMMIT/ABORT.  It is important that this test occur before we try
 		 * to do parse analysis, rewrite, or planning, since all those phases
@@ -960,6 +1029,8 @@ exec_simple_query(const char *query_string)
 
 		/*
 		 * Set up a snapshot if parse analysis/planning will need one.
+		 *
+		 * Note: queryplan statement needs a snapshot before it performs the parse analysis 
 		 */
 		if (analyze_requires_snapshot(parsetree))
 		{
@@ -975,10 +1046,56 @@ exec_simple_query(const char *query_string)
 		 */
 		oldcontext = MemoryContextSwitchTo(MessageContext);
 
-		querytree_list = pg_analyze_and_rewrite(parsetree, query_string,
+    /*
+     * This is where we break in to transform the AST of a query plan statement to 
+     * the internal representation of an exectution plan that can be recognized and
+     * executed by PostgreSQL.
+     *
+     * If the parsetree is a query plan statement, it invokes function pq_parse_analyze()
+     * to perform the parse analysis. Since in our query plan langauage we dont support
+     * any SQL query that need perform the rewrite rule. We dont have to implement a
+     * rewriter. The pg_parse_analyze will perform a mock path which will be used to build
+     * the real plan.
+     *
+     */
+    if(IsA((Node *)parsetree, QueryPlanStmt)){
+			Query *query;
+			isqpstmt=true;
+			
+			/* create a mockpath pointer to reference the to-be-created
+			 * mock path 
+			 */
+			QueryPlanStmt *n= (QueryPlanStmt*) parsetree;
+			if(strcmp(n->showplan,"p") == 0 || strcmp(n->showplan, "P") == 0)
+				qp_showplan=true;
+			else if(strcmp(n->showplan,"r") == 0 || strcmp(n->showplan, "R") == 0)
+				qp_showplan = false;
+			else
+				elog(ERROR,"wrong parameter for queryplan command");
+				 
+					
+			MockPath *mockpath;
+			
+			TRACE_POSTGRESQL_QUERY_REWRITE_START(query_string);
+			
+			if(log_parser_stats)
+				ResetUsage();
+			query = qp_parse_analyze(parsetree,query_string,NULL,0,&mockpath);
+			
+			if(log_parser_stats)
+				ShowUsage("PARSE ANALYSIS STATISTICS");
+			
+			TRACE_POSTGRESQL_QUERY_REWRITE_DONE(query_string);
+			
+			/* TODO: create the plan 
+			 * currently I also pass in the query, but it seems not necessary*/
+			plantree_list = qp_queryplan_create(query, 0, NULL, mockpath);
+		}else{
+			querytree_list = pg_analyze_and_rewrite(parsetree, query_string,
 												NULL, 0);
 
-		plantree_list = pg_plan_queries(querytree_list, 0, NULL);
+			plantree_list = pg_plan_queries(querytree_list, 0, NULL);
+		}
 
 		/* Done with the snapshot used for parsing/planning */
 		if (snapshot_set)
@@ -1011,7 +1128,7 @@ exec_simple_query(const char *query_string)
 		 * Start the portal.  No parameters here.
 		 */
 		PortalStart(portal, NULL, InvalidSnapshot);
-
+		
 		/*
 		 * Select the appropriate output format: text unless we are doing a
 		 * FETCH from a binary cursor.	(Pretty grotty to have to do this here
@@ -1049,17 +1166,29 @@ exec_simple_query(const char *query_string)
 		/*
 		 * Run the portal to completion, and then drop it (and the receiver).
 		 */
+		if(isqpstmt==false){
 		(void) PortalRun(portal,
 						 FETCH_ALL,
 						 isTopLevel,
 						 receiver,
 						 receiver,
 						 completionTag);
+						}
+		else{
+			(void) qp_PortalRun(portal,
+						 FETCH_ALL,
+						 isTopLevel,
+						 receiver,
+						 receiver,
+						 completionTag,
+						 qp_showplan);
+						}
+
 
 		(*receiver->rDestroy) (receiver);
 
-		PortalDrop(portal, false);
-
+   		PortalDrop(portal, false);
+		
 		if (IsA(parsetree, TransactionStmt))
 		{
 			/*
@@ -3814,8 +3943,7 @@ PostgresMain(int argc, char *argv[], const char *username)
 				set_ps_display("idle", false);
 				pgstat_report_activity("<IDLE>");
 			}
-
-			ReadyForQuery(whereToSendOutput);
+      ReadyForQuery(whereToSendOutput);
 			send_ready_for_query = false;
 		}
 
@@ -3831,7 +3959,6 @@ PostgresMain(int argc, char *argv[], const char *username)
 		 * (3) read a command (loop blocks here)
 		 */
 		firstchar = ReadCommand(&input_message);
-
 		/*
 		 * (4) disable async signal conditions again.
 		 */

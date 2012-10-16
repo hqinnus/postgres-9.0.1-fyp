@@ -15,7 +15,12 @@
 #define PARSE_CLAUSE_H
 
 #include "parser/parse_node.h"
+#include "nodes/relation.h"
 
+extern void transformRelationName(ParseState *pstate, Node *n, MockPath *mockpath);
+extern void transformQualExpr(ParseState *pstate, Node *clause, MockPath *mockpath);
+extern Node *transformQualExprRec(ParseState *pstate, Node *clause);
+extern Node *transformJoinColumn(ParseState *pstate, Node *n);
 extern void transformFromClause(ParseState *pstate, List *frmList);
 extern int setTargetTable(ParseState *pstate, RangeVar *relation,
 			   bool inh, bool alsoSource, AclMode requiredPerms);

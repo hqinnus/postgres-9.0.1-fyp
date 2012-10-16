@@ -24,7 +24,14 @@ typedef PlannedStmt *(*planner_hook_type) (Query *parse,
 												  ParamListInfo boundParams);
 extern PGDLLIMPORT planner_hook_type planner_hook;
 
+extern PlannedStmt *qp_planner(Query *parse, int cursorOptions, 
+								ParamListInfo boundParams, MockPath *mockpath);
+extern Plan *qp_plan_create(PlannerGlobal *glob, Query *parse, bool hasRecursion, 
+				double tuple_fraction, PlannerInfo **subroot, MockPath *mockpath);
+extern Plan *qp_grouping_planner(PlannerInfo *root, double tuple_fraction, MockPath *mockpath);
 
+
+extern Node *preprocess_expression(PlannerInfo *root, Node *expr, int kind);
 extern PlannedStmt *planner(Query *parse, int cursorOptions,
 		ParamListInfo boundParams);
 extern PlannedStmt *standard_planner(Query *parse, int cursorOptions,

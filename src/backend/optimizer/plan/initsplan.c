@@ -23,6 +23,7 @@
 #include "optimizer/paths.h"
 #include "optimizer/placeholder.h"
 #include "optimizer/planmain.h"
+#include "optimizer/planner.h"
 #include "optimizer/prep.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/var.h"
@@ -31,7 +32,7 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
-
+#include "nodes/print.h"
 
 /* These parameters are set by GUC */
 int			from_collapse_limit;
@@ -61,6 +62,112 @@ static void check_hashjoinable(RestrictInfo *restrictinfo);
 
 /*****************************************************************************
  *
+ *                   NEW FUNCTION
+ *
+ ****************************************************************************/
+void qp_distribute_quals(MockPath* mockpath, PlannerInfo * root){
+	ListCell *l;
+	/* before we distribute quals, we need preprocess it */
+	Node * quals = mockpath->quals;
+	quals = preprocess_expression(root, quals, 0);
+	foreach(l, (List *)quals){
+		Node *qual = (Node *)lfirst(l);
+        //elog(WARNING, "COME HERE");
+		Relids relids = pull_varnos(qual);
+		RestrictInfo *restrictinfo = make_restrictinfo((Expr*)qual, true, false,
+							false, relids, NULL);
+		
+		RelOptInfo *rel;
+		
+		if(mockpath->rmp !=NULL){
+			List	   *vars = pull_var_clause(qual, PVC_INCLUDE_PLACEHOLDERS);
+			add_vars_to_targetlist(root, vars, relids);
+			list_free(vars);
+		}
+		check_mergejoinable(restrictinfo);
+
+		if (restrictinfo->mergeopfamilies)
+		{
+			if (true)
+			{
+				if (process_equivalence(root, restrictinfo, false)){
+				    continue;
+				}
+				elog(ERROR,"Error in distribute quals.@qp_distribte_quals");
+			}
+		}
+		
+        /*
+         * Push a completed RestrictInfo into the proper restriction or join
+         * clause list(s).
+         * This is the last step of distribute_qual_to_rels() for ordinary qual
+         * clauses.  Clauses that are interesting for equivalence-class processing
+         * are diverted to the EC machinery, but may ultimately get fed back here.
+         * 
+         * For distribute_retrictinfo_to_rels
+         */        
+		relids = restrictinfo->required_relids;
+		
+		switch (bms_membership(relids))
+		{
+			case BMS_SINGLETON:
+
+				/*
+			 	* There is only one relation participating in the clause, so it
+			 	* is a restriction clause for that relation.
+			 	*/
+			 	rel = find_base_rel(root, bms_singleton_member(relids));
+
+				/* Add clause to rel's restriction list */
+				rel->baserestrictinfo = lappend(rel->baserestrictinfo,
+												restrictinfo);
+				break;
+			case BMS_MULTIPLE:
+
+				/*
+			 	* The clause is a join clause, since there is more than one rel
+			 	* in its relid set.
+			 	*/
+				/*
+			 	* Check for hashjoinable operators.  (We don't bother setting the
+			 	* hashjoin info if we're not going to need it.)
+			 	*/
+			 	if (enable_hashjoin)
+					check_hashjoinable(restrictinfo);
+
+				/*
+			 	 * Add clause to the join lists of all the relevant relations.
+			 	 */
+				add_join_clause_to_rels(root, restrictinfo, relids);
+				break;
+			default:
+
+				/*
+			 	 * clause references no rels, and therefore we have no place to
+			 	 * attach it.  Shouldn't get here if callers are working properly.
+			 	 */
+				elog(ERROR, "cannot cope with variable-free clause");
+				break;
+		}
+	}
+
+
+
+	if(mockpath->lmp !=NULL){
+		qp_distribute_quals(mockpath->lmp, root);
+		if(mockpath->rmp !=NULL){
+			qp_distribute_quals(mockpath->rmp, root);
+		}
+	}else if(mockpath->bmindexscanlist!=NULL){
+		ListCell *l;
+		foreach(l, mockpath->bmindexscanlist){
+			qp_distribute_quals(lfirst(l),root);
+		}
+	}
+}
+
+/*****************************************************************************
+ *.
  *	 JOIN TREES
  *
  *****************************************************************************/
@@ -89,7 +196,7 @@ add_base_rels_to_query(PlannerInfo *root, Node *jtnode)
 	if (IsA(jtnode, RangeTblRef))
 	{
 		int			varno = ((RangeTblRef *) jtnode)->rtindex;
-
+		
 		(void) build_simple_rel(root, varno, RELOPT_BASEREL);
 	}
 	else if (IsA(jtnode, FromExpr))
@@ -340,8 +447,8 @@ deconstruct_recurse(PlannerInfo *root, Node *jtnode, bool below_outer_join,
 		foreach(l, (List *) f->quals)
 		{
 			Node	   *qual = (Node *) lfirst(l);
-
-			distribute_qual_to_rels(root, qual,
+            
+      distribute_qual_to_rels(root, qual,
 									false, below_outer_join, JOIN_INNER,
 									*qualscope, NULL, NULL);
 		}
@@ -1008,6 +1115,7 @@ distribute_qual_to_rels(PlannerInfo *root, Node *clause,
 	/*
 	 * Build the RestrictInfo node itself.
 	 */
+	
 	restrictinfo = make_restrictinfo((Expr *) clause,
 									 is_pushed_down,
 									 outerjoin_delayed,
@@ -1071,8 +1179,9 @@ distribute_qual_to_rels(PlannerInfo *root, Node *clause,
 	{
 		if (maybe_equivalence)
 		{
-			if (process_equivalence(root, restrictinfo, below_outer_join))
+			if (process_equivalence(root, restrictinfo, below_outer_join)){
 				return;
+			}
 			/* EC rejected it, so pass to distribute_restrictinfo_to_rels */
 		}
 		else if (maybe_outer_join && restrictinfo->can_join)

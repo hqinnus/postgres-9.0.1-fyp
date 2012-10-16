@@ -337,12 +337,16 @@ make_and_qual(Node *qual1, Node *qual2)
 Expr *
 make_ands_explicit(List *andclauses)
 {
-	if (andclauses == NIL)
-		return (Expr *) makeBoolConst(true, false);
-	else if (list_length(andclauses) == 1)
-		return (Expr *) linitial(andclauses);
-	else
-		return make_andclause(andclauses);
+	if (andclauses == NIL){
+		//debugging purpose
+		elog(WARNING,"empty and clauses");
+	return (Expr *) makeBoolConst(true, false);}
+	else if (list_length(andclauses) == 1){
+		elog(WARNING,"one and clauses");
+	return (Expr *) linitial(andclauses);}
+	else{
+		elog(WARNING,"more than one and clauses");
+	return make_andclause(andclauses);}
 }
 
 List *
@@ -2365,7 +2369,8 @@ eval_const_expressions_mutator(Node *node,
 					if (list_length(newargs) == 1)
 						return (Node *) linitial(newargs);
 					/* Else we still need an OR node */
-					return (Node *) make_orclause(newargs);
+					Node *tmp_test = (Node *) make_orclause(newargs);
+					return tmp_test;
 				}
 			case AND_EXPR:
 				{
@@ -2386,7 +2391,8 @@ eval_const_expressions_mutator(Node *node,
 					if (list_length(newargs) == 1)
 						return (Node *) linitial(newargs);
 					/* Else we still need an AND node */
-					return (Node *) make_andclause(newargs);
+					Node *tmp_test = (Node *) make_andclause(newargs);
+					return tmp_test;
 				}
 			case NOT_EXPR:
 				{

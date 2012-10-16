@@ -42,6 +42,7 @@
 #include "rewrite/rewriteManip.h"
 #include "utils/rel.h"
 
+#include "nodes/planoperators.h"
 
 static Query *transformDeleteStmt(ParseState *pstate, DeleteStmt *stmt);
 static Query *transformInsertStmt(ParseState *pstate, InsertStmt *stmt);
@@ -63,7 +64,344 @@ static Query *transformExplainStmt(ParseState *pstate,
 					 ExplainStmt *stmt);
 static void transformLockingClause(ParseState *pstate, Query *qry,
 					   LockingClause *lc, bool pushedDown);
+static MockPath* transformBMIndex(ParseState *pstate, Node *n);
+static bool table_match(Node* bitmap, Node* table);
 
+/********************************************************************************
+ *
+ *                      New Functions
+ *
+ *******************************************************************************/
+/*
+ * pq_parse_analyze
+ *		Analyze a raw parse tree of query plan statement and transform it to Query form.
+ *    It also generates a mock path.
+ *
+ */
+Query *
+qp_parse_analyze(Node *parseTree, const char *sourceText,
+			  Oid *paramTypes, int numParams, MockPath ** mockpath)
+{
+	ParseState *pstate = make_parsestate(NULL);
+	Query	   *query;
+	
+	/* initiate a mock path. we are going to build it recursively */
+  *mockpath = make_mockpath();
+
+	Assert(sourceText != NULL); 
+	//this function only deals with the queryplanstmt case
+	Assert(IsA((Node *)parseTree, QueryPlanStmt));
+
+	pstate->p_sourcetext = sourceText;
+
+	if (numParams > 0)
+		parse_fixed_parameters(pstate, paramTypes, numParams);
+		
+  /* start semantic analysis and transform it into a mock path */
+  query = transform_qpstmt(pstate, (QueryPlanStmt*)parseTree, *mockpath);
+	
+	query->querySource = QSRC_ORIGINAL;
+	query->canSetTag = true;
+  
+	free_parsestate(pstate);
+
+	return query;
+}
+
+/*
+ * transform_qpstmt -
+ *	  interprets a query plan operator and builds the mock path
+ *
+ */
+Query *
+transform_qpstmt(ParseState *pstate, QueryPlanStmt *stmt, MockPath *mockpath)
+{
+	Query	   *qry = makeNode(Query);
+  /* TODO: change it to CMD_QUERYPLAN;*/
+	qry->commandType = CMD_SELECT;
+
+  /* first step: recursively process the parse tree and build the mock path
+   * When we build the mock path. The qual is also processed and added to 
+   * the corresponding mock path.
+   */
+  transform_qpoperator(pstate,stmt->operator, mockpath);
+			
+	/* second step: process the target list */ 
+	qry->targetList = transformTargetList(pstate, stmt->targetlist);
+	
+	/* mark column origins */
+	markTargetListOrigins(pstate, qry->targetList);
+	
+	/* every time function transformFromClauseItem() is invoked,
+	 * a range table entry is added into pstate->p_rtable
+	 */
+	qry->rtable = pstate->p_rtable;
+	
+	/* Since we have processed the qual and put each one to the mockpath
+	 * that it belongs to. So we assign NULL to the quals parameter
+	 */
+	qry->jointree = makeFromExpr(pstate->p_joinlist, NULL);
+	
+	return qry;
+}
+
+/*
+ * transform_qpoperator
+ * 		interprets one query plan operator and build a mock path just for this operator
+ *
+ */
+void
+transform_qpoperator(ParseState *pstate, Node *n, MockPath *mockpath)
+{
+	switch(nodeTag(n)){
+		case T_SeqScanOperator:
+			{
+				mockpath->pathtype = T_SeqScanOperator;
+				transform_scanoperator(pstate,n,mockpath);
+			}
+			
+			break;
+			
+		case T_IndexScanOperator:
+			{
+				mockpath->pathtype = T_IndexScanOperator;
+				transform_scanoperator(pstate,n,mockpath);
+			}
+			
+			break;
+		
+		case T_BMHeapScanOperator:
+			{
+				mockpath->pathtype = T_BMHeapScanOperator;
+				transform_scanoperator(pstate,n,mockpath);
+			}
+			
+			break;
+			
+		case T_NestLoopOperator:
+			{
+				MockPath *lmp = make_mockpath();
+				MockPath *rmp = make_mockpath();
+				
+				Node* lopr = NULL;
+				Node* lcol = NULL;
+				Node* ropr = NULL;
+				Node* rcol = NULL;
+				Node* qual = NULL;
+				
+				mockpath->pathtype = T_NestLoopOperator;
+				
+				/* intepret its two join operands first */
+				lopr = ((NestLoopOperator*)n)->leftopr;
+				ropr = ((NestLoopOperator*)n)->rightopr;
+			  
+			  /* we must preserve the order of doing analyzing here:
+			   * 				interpret lopr -> interpret lcol -> 
+			   *        interpret ropr -> interpret rcol.
+			   * This is because when we interpret an operator, it will
+			   * automatically add the interpreted namesapce into pstate
+			   */ 
+			  transform_qpoperator(pstate, lopr, lmp);
+			  /*TODO: implement Cartisian join */
+			  if(nodeTag(ropr)!= T_MaterializationOperator){
+			  	/* interpret join column owned by lopr */
+			  	lcol = ((NestLoopOperator*)n)->leftcol;
+			  	lcol = transformJoinColumn(pstate, lcol);
+			  }
+			  transform_qpoperator(pstate, ropr, rmp);
+			  if(nodeTag(ropr)!= T_MaterializationOperator){
+					/* interpret join column owned by ropr */
+					rcol = ((NestLoopOperator*)n)->rightcol;
+					rcol = transformJoinColumn(pstate, rcol);
+				
+					qual = (Node *) make_op(pstate,list_make1(makeString((char *)"=")),lcol,rcol,NULL);
+					
+			  	mockpath->quals = coerce_to_boolean(pstate, qual, "QueryPlan");
+			  }
+			  
+				mockpath->lmp = lmp;
+				mockpath->rmp = rmp;
+			}
+			break;
+		
+		case T_HashJoinOperator:
+			{
+				MockPath *lmp = make_mockpath();
+				MockPath *rmp = make_mockpath();
+				
+				Node* lopr = NULL;
+				Node* ropr = NULL;
+				Node* lcol = NULL;
+				Node* rcol = NULL;
+				Node* qual = NULL;
+				
+				mockpath->pathtype = T_HashJoinOperator;
+				
+				/* process its two join operands first */
+				lopr = ((HashJoinOperator*)n)->leftopr;
+				ropr = ((HashJoinOperator*)n)->rightopr;
+			  
+			  transform_qpoperator(pstate, lopr, lmp);
+			  transform_qpoperator(pstate, ropr, rmp);
+			  /* interpret join column owned by lopr */
+			  lcol = ((HashJoinOperator*)n)->leftcol;
+			  lcol = transformJoinColumn(pstate, lcol);
+			  
+				/* interpret join column owned by ropr */
+				rcol = ((HashJoinOperator*)n)->rightcol;
+			  rcol = transformJoinColumn(pstate, rcol);
+				
+				/* TODO: */
+				qual = (Node *) make_op(pstate,list_make1(makeString((char *)"=")),lcol,rcol,NULL);
+				mockpath->quals = coerce_to_boolean(pstate, qual, "QueryPlan");
+				
+				mockpath->lmp = lmp;
+				mockpath->rmp = rmp;
+			}
+			break;
+		default:
+			elog(ERROR,"undefined node tag found @transform_qpoperator");
+			break;
+	}
+}
+
+/*
+ * transform_scanoperator
+ *	  interprets a scan operator and builds a mock path for it
+ *    we'll also put the qual in the scan operator into the mock path
+ *
+ */
+void 
+transform_scanoperator(ParseState *pstate, Node *n, MockPath * mockpath)
+{
+	Node     *table = NULL;
+	Node     *quals = NULL;
+	Node     *indexCol = NULL;
+	int      hasindex = 0;
+	Node     *bitmap = NULL;
+  
+	switch(nodeTag(n)){
+		case T_SeqScanOperator:
+			table = ((SeqScanOperator *)n)->table;
+			quals = ((SeqScanOperator *)n)->exprs;
+			
+			break;
+		
+		case T_IndexScanOperator:
+			table = ((IndexScanOperator *)n)->table;
+			quals = ((IndexScanOperator *)n)->exprs;
+			indexCol = ((IndexScanOperator *)n)->col;
+			hasindex =1;
+			break;
+			
+		case T_BMHeapScanOperator:
+			bitmap = ((BMHeapScanOperator *)n)->bitmap;
+			table = ((BMHeapScanOperator *)n)->table;
+			if(!table_match(bitmap, table)){
+				elog(ERROR, "All BMIndexScan operators under the same BMHeapScan Operator must be defined for the same table");
+				return;
+			}
+			
+			break;
+			
+		default:
+			elog(ERROR, "undefined node is found@transform_scanoperator.");
+	}
+	
+	/* interpret relation. We'll add it into the pstate and mockpath*/
+	transformRelationName(pstate, table, mockpath);
+	
+	switch(nodeTag(n)){
+		case T_IndexScanOperator:
+			/* At this stage, we only check if the column is a valid column.
+		 	 * However the check if this column has a proper index for hash scan
+		 	 * is postponed to the mapping stage
+		 	 */
+			mockpath->indexCol = transformJoinColumn(pstate, indexCol);
+			
+			break;
+			
+		case T_BMHeapScanOperator:
+			mockpath->lmp = transformBMIndex(pstate, bitmap);
+			
+			break;
+		
+		default:
+			break;
+	}
+	/* 
+	 * Process qual here.
+	 * quals will be added into mockpath
+	 */
+	transformQualExpr(pstate, quals, mockpath);
+	
+}
+
+static MockPath* transformBMIndex(ParseState *pstate, Node *n){
+	MockPath* mockpath = make_mockpath();
+	mockpath->pathtype = nodeTag(n);
+	
+	if(IsA(n, BMIndexScanOperator)){
+		mockpath->indexCol = transformJoinColumn(pstate,((BMIndexScanOperator*)n)->col);
+		transformQualExpr(pstate,((BMIndexScanOperator*)n)->exprs,mockpath);
+	}else{
+		ListCell* l;
+		List* bms;
+		List* bmindexscans = NULL;
+		if(IsA(n, BMAndOperator))
+			bms = ((BMAndOperator*)n)->bitmaps;
+		else
+			bms = ((BMOrOperator*)n)->bitmaps;
+		foreach(l, bms){
+			Node* n1 = lfirst(l);
+			MockPath *n2=transformBMIndex(pstate,n1);
+			if(n2->quals != NULL && !IsA(n, BMAndOperator)){
+				if(mockpath->quals == NULL){
+					mockpath->quals = n2->quals;
+				}
+				else{
+					Node *lexpr = coerce_to_boolean(pstate,mockpath->quals, "OR");
+					Node *rexpr = coerce_to_boolean(pstate,n2->quals, "OR");
+					mockpath->quals = (Node *)makeBoolExpr(OR_EXPR,list_make2(lexpr,rexpr),NULL);
+				}
+				n2->quals = NULL;
+						
+			}
+			bmindexscans = list_concat(bmindexscans, list_make1(n2));
+		}
+		mockpath->bmindexscanlist = bmindexscans;
+	}
+	return mockpath;
+}
+
+static bool table_match(Node* bitmap, Node* table){
+
+	if(IsA(bitmap,BMIndexScanOperator)){
+		RangeVar* n2= (RangeVar*)((BMIndexScanOperator *)bitmap)->table;
+		return (strcmp(((RangeVar*)table)->relname, n2->relname) ==0);
+	}else{
+		ListCell* l;
+		List* bms;
+		
+		if(IsA(bitmap, BMAndOperator))
+			bms = ((BMAndOperator*)bitmap)->bitmaps;
+		else
+			bms = ((BMOrOperator*)bitmap)->bitmaps;
+		
+		foreach(l, bms){
+			Node* n1 = lfirst(l);
+			if(!table_match(n1,table))
+				return false;
+		}
+		return true;
+	}	
+}
+
+/*****************************************************************
+ *
+ *                     End
+ *
+ *****************************************************************/
 
 /*
  * parse_analyze
@@ -260,6 +598,11 @@ analyze_requires_snapshot(Node *parseTree)
 			/* yes, because we must analyze the contained statement */
 			result = true;
 			break;
+		
+		case T_QueryPlanStmt:
+			/* yes, because it's analyzed just like SELECT*/
+			result = true;
+			break;
 
 		default:
 			/* other utility statements don't have any real parse analysis */
@@ -299,7 +642,7 @@ transformDeleteStmt(ParseState *pstate, DeleteStmt *stmt)
 	transformFromClause(pstate, stmt->usingClause);
 
 	qual = transformWhereClause(pstate, stmt->whereClause, "WHERE");
-
+	
 	qry->returningList = transformReturningList(pstate, stmt->returningList);
 
 	/* done building the range table and jointree */
@@ -765,7 +1108,6 @@ transformInsertRow(ParseState *pstate, List *exprlist,
 
 	return result;
 }
-
 
 /*
  * transformSelectStmt -

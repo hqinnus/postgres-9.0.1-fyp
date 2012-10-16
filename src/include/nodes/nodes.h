@@ -37,6 +37,22 @@ typedef enum NodeTag
 	T_ResultRelInfo,
 	T_EState,
 	T_TupleTableSlot,
+	
+	/*
+	 * TAGS FOR PLAN OPERATORS (queryplannodes.h)
+	 */
+	T_QueryPlanStmt = 50,
+	T_SeqScanOperator,
+	T_IndexScanOperator,
+	T_BMIndexScanOperator,
+	T_BMHeapScanOperator,
+	T_BMAndOperator,
+	T_BMOrOperator,
+	T_MaterializationOperator,
+	T_NestLoopOperator,
+	T_HashJoinOperator,
+	//T_MergeJoinOperator,
+	T_MockPath,
 
 	/*
 	 * TAGS FOR PLAN NODES (plannodes.h)
@@ -512,6 +528,7 @@ typedef enum CmdType
 	CMD_DELETE,
 	CMD_UTILITY,				/* cmds like create, destroy, copy, vacuum,
 								 * etc. */
+	CMD_QUERYPLAN,
 	CMD_NOTHING					/* dummy command for instead nothing rules
 								 * with qual */
 } CmdType;

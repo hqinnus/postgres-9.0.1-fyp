@@ -1382,6 +1382,11 @@ CreateCommandTag(Node *parsetree)
 
 	switch (nodeTag(parsetree))
 	{
+		/* add an case for the query plan statement */
+		case T_QueryPlanStmt:
+			tag = "QUERY PLAN";
+			break;
+			
 			/* raw plannable queries */
 		case T_InsertStmt:
 			tag = "INSERT";

@@ -33,6 +33,42 @@ static void pcb_error_callback(void *arg);
 
 
 /*
+ * make_mockpath
+ *		Allocate and initialize a new mockpath.
+ *
+ */
+MockPath *
+make_mockpath(void)
+{
+	MockPath *mockpath;
+
+	mockpath = palloc0(sizeof(MockPath));
+
+    mockpath->type = T_MockPath;
+
+	mockpath->pathtype = 0;
+	
+	mockpath->quals = NULL; 
+
+    mockpath->rtr = NULL; 
+
+	mockpath->relnamespace = NULL;
+	
+	mockpath->varnamespace = NULL;
+	
+	mockpath->lmp = NULL;
+	mockpath->rmp = NULL;
+	
+	mockpath->indexCol = NULL;
+	
+	mockpath->hasJoinRTEs = NIL;
+	mockpath->hasOuterJoins = NIL;
+	mockpath->bmindexscanlist = NULL;
+
+	return mockpath;
+}
+
+/*
  * make_parsestate
  *		Allocate and initialize a new ParseState.
  *
