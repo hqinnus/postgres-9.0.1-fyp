@@ -31,3 +31,6 @@ lib*dll.def
 /Debug/
 /Release/
 /bin
+/src/cscope.out
+/src/tags
+/include/server
