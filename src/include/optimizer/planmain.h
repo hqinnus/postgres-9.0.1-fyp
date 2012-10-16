@@ -24,9 +24,6 @@ extern double cursor_tuple_fraction;
 /*
  * prototypes for plan/planmain.c
  */
-extern Path *path_create(PlannerInfo *root, List *tlist,
-			  double tuple_fraction, double limit_tuples,
-			  MockPath *mockpath, double *num_groups);
 extern void query_planner(PlannerInfo *root, List *tlist,
 			  double tuple_fraction, double limit_tuples,
 			  Path **cheapest_path, Path **sorted_path,
@@ -92,7 +89,6 @@ extern bool is_projection_capable_plan(Plan *plan);
 extern int	from_collapse_limit;
 extern int	join_collapse_limit;
 
-extern void qp_distribute_quals(MockPath* mockpath, PlannerInfo * root);
 extern void add_base_rels_to_query(PlannerInfo *root, Node *jtnode);
 extern void build_base_rel_tlists(PlannerInfo *root, List *final_tlist);
 extern void add_vars_to_targetlist(PlannerInfo *root, List *vars,

@@ -56,188 +56,7 @@ static long DoPortalRunFetch(Portal portal,
 				 DestReceiver *dest);
 static void DoPortalRewind(Portal portal);
 
-/******************************************************************
- *
- *                     NEW FUNCTION
- *
- ******************************************************************/
-bool
-qp_PortalRun(Portal portal, long count, bool isTopLevel,
-		  DestReceiver *dest, DestReceiver *altdest,
-		  char *completionTag, bool showplan)
-{
-	bool		result;
-	uint32		nprocessed;
-	ResourceOwner saveTopTransactionResourceOwner;
-	MemoryContext saveTopTransactionContext;
-	Portal		saveActivePortal;
-	ResourceOwner saveResourceOwner;
-	MemoryContext savePortalContext;
-	MemoryContext saveMemoryContext;
 
-	AssertArg(PortalIsValid(portal));
-
-	TRACE_POSTGRESQL_QUERY_EXECUTE_START();
-
-	/* Initialize completion tag to empty string */
-	if (completionTag)
-		completionTag[0] = '\0';
-
-	if (log_executor_stats && portal->strategy != PORTAL_MULTI_QUERY)
-	{
-		elog(DEBUG3, "PortalRun");
-		/* PORTAL_MULTI_QUERY logs its own stats per query */
-		ResetUsage();
-	}
-
-	/*
-	 * Check for improper portal use, and mark portal active.
-	 */
-	if (portal->status != PORTAL_READY)
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("portal \"%s\" cannot be run", portal->name)));
-	portal->status = PORTAL_ACTIVE;
-
-	/*
-	 * Set up global portal context pointers.
-	 *
-	 * We have to play a special game here to support utility commands like
-	 * VACUUM and CLUSTER, which internally start and commit transactions.
-	 * When we are called to execute such a command, CurrentResourceOwner will
-	 * be pointing to the TopTransactionResourceOwner --- which will be
-	 * destroyed and replaced in the course of the internal commit and
-	 * restart.  So we need to be prepared to restore it as pointing to the
-	 * exit-time TopTransactionResourceOwner.  (Ain't that ugly?  This idea of
-	 * internally starting whole new transactions is not good.)
-	 * CurrentMemoryContext has a similar problem, but the other pointers we
-	 * save here will be NULL or pointing to longer-lived objects.
-	 */
-	saveTopTransactionResourceOwner = TopTransactionResourceOwner;
-	saveTopTransactionContext = TopTransactionContext;
-	saveActivePortal = ActivePortal;
-	saveResourceOwner = CurrentResourceOwner;
-	savePortalContext = PortalContext;
-	saveMemoryContext = CurrentMemoryContext;
-	PG_TRY();
-	{
-		ActivePortal = portal;
-		CurrentResourceOwner = portal->resowner;
-		PortalContext = PortalGetHeapMemory(portal);
-
-		MemoryContextSwitchTo(PortalContext);
-
-		switch (portal->strategy)
-		{
-			case PORTAL_ONE_SELECT:
-			case PORTAL_ONE_RETURNING:
-			case PORTAL_UTIL_SELECT:
-
-				/*
-				 * If we have not yet run the command, do so, storing its
-				 * results in the portal's tuplestore. Do this only for the
-				 * PORTAL_ONE_RETURNING and PORTAL_UTIL_SELECT cases.
-				 */
-				if (portal->strategy != PORTAL_ONE_SELECT && !portal->holdStore){
-					FillPortalStore(portal, isTopLevel);
-				}
-				
-        if(showplan == false){
-				/*
-				 * Now fetch desired portion of results.
-				 */
-				nprocessed = PortalRunSelect(portal, true, count, dest);
-			}else{
-				
-        	PlannedStmt *plan = (PlannedStmt *)linitial(portal->stmts);
-        	qp_display_performance(plan, portal->sourceText, NULL, dest);
-        }
-
-				/*
-				 * If the portal result contains a command tag and the caller
-				 * gave us a pointer to store it, copy it. Patch the "SELECT"
-				 * tag to also provide the rowcount.
-				 */
-				if (completionTag && portal->commandTag)
-				{
-					if (strcmp(portal->commandTag, "SELECT") == 0 || strcmp(portal->commandTag, "QUERYPLAN"))
-						snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
-								 "SELECT %u", nprocessed);
-					else
-						strcpy(completionTag, portal->commandTag);
-				}
-				
-				/* Mark portal not active */
-				portal->status = PORTAL_READY;
-
-				/*
-				 * Since it's a forward fetch, say DONE iff atEnd is now true.
-				 */
-				result = portal->atEnd;
-				break;
-
-			case PORTAL_MULTI_QUERY:
-				PortalRunMulti(portal, isTopLevel,
-							   dest, altdest, completionTag);
-
-				/* Prevent portal's commands from being re-executed */
-				portal->status = PORTAL_DONE;
-
-				/* Always complete at end of RunMulti */
-				result = true;
-				break;
-
-			default:
-				elog(ERROR, "unrecognized portal strategy: %d",
-					 (int) portal->strategy);
-				result = false; /* keep compiler quiet */
-				break;
-		}
-	}
-	PG_CATCH();
-	{
-		/* Uncaught error while executing portal: mark it dead */
-		portal->status = PORTAL_FAILED;
-
-		/* Restore global vars and propagate error */
-		if (saveMemoryContext == saveTopTransactionContext)
-			MemoryContextSwitchTo(TopTransactionContext);
-		else
-			MemoryContextSwitchTo(saveMemoryContext);
-		ActivePortal = saveActivePortal;
-		if (saveResourceOwner == saveTopTransactionResourceOwner)
-			CurrentResourceOwner = TopTransactionResourceOwner;
-		else
-			CurrentResourceOwner = saveResourceOwner;
-		PortalContext = savePortalContext;
-
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
-
-	if (saveMemoryContext == saveTopTransactionContext)
-		MemoryContextSwitchTo(TopTransactionContext);
-	else
-		MemoryContextSwitchTo(saveMemoryContext);
-	ActivePortal = saveActivePortal;
-	if (saveResourceOwner == saveTopTransactionResourceOwner)
-		CurrentResourceOwner = TopTransactionResourceOwner;
-	else
-		CurrentResourceOwner = saveResourceOwner;
-	PortalContext = savePortalContext;
-
-	if (log_executor_stats && portal->strategy != PORTAL_MULTI_QUERY)
-		ShowUsage("EXECUTOR STATISTICS");
-
-	TRACE_POSTGRESQL_QUERY_EXECUTE_DONE();
-
-	return result;
-}
-/***************************************************************
- *
- *                      END
- *
- ***************************************************************/
 /*
  * CreateQueryDesc
  */
@@ -475,8 +294,7 @@ ChoosePortalStrategy(List *stmts)
 
 			if (pstmt->canSetTag)
 			{
-				if ((pstmt->commandType == CMD_SELECT || 
-					pstmt->commandType== CMD_QUERYPLAN)&&
+				if (pstmt->commandType == CMD_SELECT &&
 					pstmt->utilityStmt == NULL &&
 					pstmt->intoClause == NULL)
 					return PORTAL_ONE_SELECT;
@@ -700,7 +518,7 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 											None_Receiver,
 											params,
 											0);
-				
+
 				/*
 				 * We do *not* call AfterTriggerBeginQuery() here.	We assume
 				 * that a SELECT cannot queue any triggers.  It would be messy
@@ -721,7 +539,7 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 				 * Call ExecutorStart to prepare the plan for execution
 				 */
 				ExecutorStart(queryDesc, eflags);
-				
+
 				/*
 				 * This tells PortalCleanup to shut down the executor
 				 */
@@ -969,10 +787,8 @@ PortalRun(Portal portal, long count, bool isTopLevel,
 				 * results in the portal's tuplestore. Do this only for the
 				 * PORTAL_ONE_RETURNING and PORTAL_UTIL_SELECT cases.
 				 */
-				if (portal->strategy != PORTAL_ONE_SELECT && !portal->holdStore){
+				if (portal->strategy != PORTAL_ONE_SELECT && !portal->holdStore)
 					FillPortalStore(portal, isTopLevel);
-				}
-				
 
 				/*
 				 * Now fetch desired portion of results.
@@ -986,13 +802,13 @@ PortalRun(Portal portal, long count, bool isTopLevel,
 				 */
 				if (completionTag && portal->commandTag)
 				{
-					if (strcmp(portal->commandTag, "SELECT") == 0 || strcmp(portal->commandTag, "QUERYPLAN"))
+					if (strcmp(portal->commandTag, "SELECT") == 0)
 						snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
 								 "SELECT %u", nprocessed);
 					else
 						strcpy(completionTag, portal->commandTag);
 				}
-				
+
 				/* Mark portal not active */
 				portal->status = PORTAL_READY;
 

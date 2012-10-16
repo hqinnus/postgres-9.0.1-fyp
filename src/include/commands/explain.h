@@ -50,8 +50,7 @@ extern PGDLLIMPORT ExplainOneQuery_hook_type ExplainOneQuery_hook;
 typedef const char *(*explain_get_index_name_hook_type) (Oid indexId);
 extern PGDLLIMPORT explain_get_index_name_hook_type explain_get_index_name_hook;
 
-extern void qp_display_performance(PlannedStmt *plan, const char *queryString,
-			 ParamListInfo params, DestReceiver *dest);
+
 extern void ExplainQuery(ExplainStmt *stmt, const char *queryString,
 			 ParamListInfo params, DestReceiver *dest);
 

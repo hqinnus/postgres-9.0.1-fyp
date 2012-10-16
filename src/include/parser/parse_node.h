@@ -16,7 +16,7 @@
 
 #include "nodes/parsenodes.h"
 #include "utils/relcache.h"
-#include "nodes/relation.h"
+
 
 /*
  * Function signatures for parser hooks
@@ -128,7 +128,7 @@ typedef struct ParseCallbackState
 	ErrorContextCallback errcontext;
 } ParseCallbackState;
 
-extern MockPath *make_mockpath(void);
+
 extern ParseState *make_parsestate(ParseState *parentParseState);
 extern void free_parsestate(ParseState *pstate);
 extern int	parser_errposition(ParseState *pstate, int location);
@@ -148,6 +148,5 @@ extern ArrayRef *transformArraySubscripts(ParseState *pstate,
 						 List *indirection,
 						 Node *assignFrom);
 extern Const *make_const(ParseState *pstate, Value *value, int location);
-
 
 #endif   /* PARSE_NODE_H */

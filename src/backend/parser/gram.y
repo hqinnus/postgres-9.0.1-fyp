@@ -64,7 +64,7 @@
 #include "utils/datetime.h"
 #include "utils/numeric.h"
 #include "utils/xml.h"
-#include "nodes/planoperators.h"
+
 
 /* Location tracking support --- simpler than bison's default */
 #define YYLLOC_DEFAULT(Current, Rhs, N) \
@@ -211,13 +211,6 @@ static TypeName *TableFuncTypeName(List *columns);
 		DeallocateStmt PrepareStmt ExecuteStmt
 		DropOwnedStmt ReassignOwnedStmt
 		AlterTSConfigurationStmt AlterTSDictionaryStmt
-		Plan SeqScanOperator IndexScanOperator BMIndexScanOperator BMHeapScanOperator
-		BMAndOperator BMOrOperator NestLoopOperator HashJoinOperator MaterializationOperator
-		QueryPlanStmt
-
-%type <node> bitmap TupleCollection ColName
-%type <list> bitmaps
-%type <str> qp_option
 
 %type <node>	select_no_parens select_with_parens select_clause
 				simple_select values_clause
@@ -308,8 +301,6 @@ static TypeName *TableFuncTypeName(List *columns);
 				opt_enum_val_list enum_val_list table_func_column_list
 				create_generic_options alter_generic_options
 				relation_expr_list dostmt_opt_list
-                QualExprs QualExpr
-
 
 %type <range>	OptTempTableName
 %type <into>	into_clause create_as_target
@@ -446,6 +437,7 @@ static TypeName *TableFuncTypeName(List *columns);
 				opt_frame_clause frame_extent frame_bound
 %type <str>		opt_existing_window_name
 
+
 /*
  * Non-keyword token types.  These are hard-wired into the "flex" lexer.
  * They must be listed first so that their numeric codes do not depend on
@@ -458,6 +450,7 @@ static TypeName *TableFuncTypeName(List *columns);
 %token <str>	IDENT FCONST SCONST BCONST XCONST Op
 %token <ival>	ICONST PARAM
 %token			TYPECAST DOT_DOT COLON_EQUALS
+
 /*
  * If you want to make any keyword changes, update the keyword table in
  * src/include/parser/kwlist.h and add new keywords to the appropriate one
@@ -552,8 +545,6 @@ static TypeName *TableFuncTypeName(List *columns);
 	YEAR_P YES_P
 
 	ZONE
-	
-	QUERYPLAN SEQSCAN INDEXSCAN BMHEAPSCAN BMINDEXSCAN  MATERIALIZATION NESTLOOP HASHJOIN
 
 /*
  * The grammar thinks these are keywords, but they are not in the kwlist.h
@@ -561,6 +552,7 @@ static TypeName *TableFuncTypeName(List *columns);
  * creates these tokens when required.
  */
 %token			NULLS_FIRST NULLS_LAST WITH_TIME
+
 
 /* Precedence: lowest to highest */
 %nonassoc	SET				/* see relation_expr_opt_alias */
@@ -735,7 +727,6 @@ stmt :
 			| LockStmt
 			| NotifyStmt
 			| PrepareStmt
-			| QueryPlanStmt
 			| ReassignOwnedStmt
 			| ReindexStmt
 			| RemoveAggrStmt
@@ -2599,7 +2590,7 @@ opt_column_list:
 
 columnList:
 			columnElem								{ $$ = list_make1($1); }
-			| columnList ',' columnElem				{ $$ = ($1, $3); }
+			| columnList ',' columnElem				{ $$ = lappend($1, $3); }
 		;
 
 columnElem: ColId
@@ -6914,206 +6905,6 @@ opt_name_list:
 			| /*EMPTY*/								{ $$ = NIL; }
 		;
 
-/*****************************************************************************
- *
- *		QUERYPLAN:
- *				QUERYPLAN PlanOperator
- *		This is the new command that I implement.
- *****************************************************************************/
-QueryPlanStmt:
-		QUERYPLAN qp_option Plan WITH target_list
-				{	
-				  QueryPlanStmt *n = makeNode(QueryPlanStmt);
-					n->showplan = $2;
-					n->operator = $3;
-					n->targetlist = $5;
-					$$ = (Node *)n;
-				};
-qp_option: IDENT{$$=$1};
-
-Plan:
-		SeqScanOperator
-				{
-					$$ = $1;
-				}
-		| IndexScanOperator
-				{
-					$$ = $1;
-				}
-		| BMHeapScanOperator
-				{
-					$$ = $1;
-				}
-		|	NestLoopOperator
-				{
-					$$ = $1;
-				}
-		| HashJoinOperator
-				{
-					$$ = $1;
-				}
-		;
-		
-SeqScanOperator:
-		'(' SEQSCAN ',' table_ref QualExprs ')' 
-				{
-					SeqScanOperator *n = makeNode(SeqScanOperator);
-					n->table = $4;
-					n->exprs = $5;
-					$$ = (Node *)n;
-				};
-
-IndexScanOperator:
-		'(' INDEXSCAN ',' table_ref ',' ColName QualExprs ')'
-				{
-					IndexScanOperator *n = makeNode(IndexScanOperator);
-					n->table = $4;
-					n->col = $6;
-					n->exprs = $7;
-					$$ = (Node *)n;
-				};
-
-BMHeapScanOperator:
-		'(' BMHEAPSCAN ',' table_ref ',' bitmap ')'
-				{
-					BMHeapScanOperator *n = makeNode(BMHeapScanOperator);
-					n->table = $4;
-					n->bitmap = $6;
-					$$ = (Node *)n;
-				};
-
-bitmap:
-		BMIndexScanOperator
-				{
-					$$ = $1;
-				}
-		|	BMAndOperator
-				{
-					$$ = $1;
-				}
-		| BMOrOperator
-				{
-					$$ = $1;
-				};
-
-BMIndexScanOperator:
-		'(' BMINDEXSCAN ',' table_ref ',' ColName QualExprs ')'
-				{
-					BMIndexScanOperator *n = makeNode(BMIndexScanOperator);
-					n->table = $4;
-					n->col = $6;
-					n->exprs = $7;
-					$$ = (Node *)n;
-				};
-
-BMAndOperator:
-		'(' AND ',' bitmaps ')'
-				{
-					BMAndOperator *n = makeNode(BMAndOperator);
-					n-> bitmaps = $4;
-					$$ = (Node *)n;
-				};
-
-BMOrOperator:
-		'(' OR ',' bitmaps ')'
-				{
-					BMOrOperator *n = makeNode(BMOrOperator);
-					n-> bitmaps = $4;
-					$$ = (Node *)n;
-				};
-									
-NestLoopOperator:
-		'(' NESTLOOP ',' TupleCollection ',' ColName ',' TupleCollection ',' ColName ')'
-				{
-					NestLoopOperator *n = makeNode(NestLoopOperator);
-					
-					n->leftopr = $4;
-					n->leftcol = $6;
-					n->rightopr = $8;
-					n->rightcol = $10;
-					/*
-					je->jointype = $4;
-					je->isNatural = FALSE;
-					je->larg = getTable(((JoinOperand *)$6)->operator); 
-					je->rarg = getTable(((JoinOperand *)$8)->operator);
-					je->quals = (Node *)makeSimpleA_Expr(AEXPR_OP, "=", ((JoinOperand *)$6)->column, 
-																			((JoinOperand *)$8)->column, NULL);
-										
-					n->table = (Node *)je;
-					n->leftopr = $6;
-					n->rightopr = $8;
-					*/
-					$$ = (Node *) n;
-				}
-		|	'(' NESTLOOP ',' TupleCollection ',' MaterializationOperator ')'
-			{
-					NestLoopOperator *n = makeNode(NestLoopOperator);
-					
-					n->leftopr = $4;
-					n->leftcol = NULL;
-					n->rightopr = $6;
-					n->rightcol = NULL;
-					$$ = (Node *) n;
-			};	
-				
-HashJoinOperator:
-		'(' HASHJOIN ',' TupleCollection ',' ColName ',' TupleCollection ',' ColName ')'
-				{
-					HashJoinOperator *n = makeNode(HashJoinOperator);
-					
-					n->leftopr = $4;
-					n->leftcol = $6;
-					n->rightopr = $8;
-					n->rightcol = $10;
-					$$ = (Node *)n;
-				};
-
-
-MaterializationOperator:
-		'(' MATERIALIZATION ',' TupleCollection ')'
-				{
-					MaterializationOperator *n = makeNode(MaterializationOperator);
-					n->tuples = $4;
-					$$ = (Node *)n;
-				};
-				
-QualExprs:
-         ',' QualExpr
-         		{
-         			$$ = $2;
-        		}
-         |	{
-         			$$ = NULL;
-         };
-         
-QualExpr:
-	a_expr
-	{
-		$$ = $1;
-	};
-
-							
-TupleCollection:
-		Plan
-				{
-					$$ = $1;
-				};
-
-bitmaps:
-		bitmap
-				{
-					$$ = list_make1($1);
-				}
-		| bitmaps ',' bitmap
-				{
-					$$ = lappend($1, $3);
-				};
-	
-ColName:
-		columnref
-				{
-					$$ = $1;
-				};
 
 /*****************************************************************************
  *
@@ -11038,8 +10829,6 @@ unreserved_keyword:
 			| BACKWARD
 			| BEFORE
 			| BEGIN_P
-			| BMHEAPSCAN
-			| BMINDEXSCAN
 			| BY
 			| CACHE
 			| CALLED
@@ -11111,7 +10900,6 @@ unreserved_keyword:
 			| GLOBAL
 			| GRANTED
 			| HANDLER
-			| HASHJOIN
 			| HEADER_P
 			| HOLD
 			| HOUR_P
@@ -11124,7 +10912,6 @@ unreserved_keyword:
 			| INCREMENT
 			| INDEX
 			| INDEXES
-			| INDEXSCAN
 			| INHERIT
 			| INHERITS
 			| INLINE_P
@@ -11149,7 +10936,6 @@ unreserved_keyword:
 			| LOGIN_P
 			| MAPPING
 			| MATCH
-			| MATERIALIZATION
 			| MAXVALUE
 			| MINUTE_P
 			| MINVALUE
@@ -11158,7 +10944,6 @@ unreserved_keyword:
 			| MOVE
 			| NAME_P
 			| NAMES
-			| NESTLOOP
 			| NEXT
 			| NO
 			| NOCREATEDB
@@ -11193,7 +10978,6 @@ unreserved_keyword:
 			| PROCEDURAL
 			| PROCEDURE
 			| QUOTE
-			| QUERYPLAN
 			| RANGE
 			| READ
 			| REASSIGN
@@ -11221,7 +11005,6 @@ unreserved_keyword:
 			| SEARCH
 			| SECOND_P
 			| SECURITY
-			| SEQSCAN
 			| SEQUENCE
 			| SEQUENCES
 			| SERIALIZABLE
@@ -11955,36 +11738,6 @@ parser_init(base_yy_extra_type *yyext)
 	yyext->parsetree = NIL;		/* in case grammar forgets to set it */
 }
 
-/* 
- * get the relation table of an operator
-
-static Node *
-getTable(Node *operator){
-	
-	switch(nodeTag(operator))
-	{
-		case T_SeqScanOperator:
-			return ((SeqScanOperator *)operator)->table;
-			break;
-			
-		case T_IndexScanOperator:
-			return ((IndexScanOperator *)operator)->table;
-			break;
-			
-		case T_NestLoopOperator:
-			return ((NestLoopOperator *)operator)->table;
-			break;
-			
-		case T_HashJoinOperator:
-			return ((HashJoinOperator *)operator)->table;
-			break;
-		
-		default:
-			elog(ERROR, "Unrecognized node found");
-			return NULL;
-	}
-}
-*/
 /*
  * Merge the input and output parameters of a table function.
  */

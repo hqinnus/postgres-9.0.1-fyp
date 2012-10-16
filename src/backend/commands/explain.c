@@ -99,187 +99,9 @@ static void ExplainJSONLineEnding(ExplainState *es);
 static void ExplainYAMLLineStarting(ExplainState *es);
 static void escape_json(StringInfo buf, const char *str);
 static void escape_yaml(StringInfo buf, const char *str);
-static void qp_ExplainOnePlan(PlannedStmt *plannedstmt, ExplainState *es,
-			   const char *queryString, ParamListInfo params);
 
 
-/*******************************************************************
- *
- *                      New Function
- *
- ******************************************************************/
-void
-qp_display_performance(PlannedStmt *plan, const char *querystring,
-			 ParamListInfo params, DestReceiver *dest)
-{
-	ExplainState es;
-	TupOutputState *tstate;
-	bool		xml = false;
-	TupleDesc	tupdesc;
 
-	/* Initialize ExplainState. */
-	ExplainInitState(&es);
-	es.analyze = true;
-	es.costs = false; /* TODO: should I include it? */
-	es.format = EXPLAIN_FORMAT_TEXT;
-
-  /* emit opening boilerplate */
-  	ExplainBeginOutput(&es);
-    qp_ExplainOnePlan(plan, &es, querystring, params);
-  	/* emit closing boilerplate */
-	ExplainEndOutput(&es);
-	Assert(es.indent == 0);
-
-	/* output tuples */
-  	/* Need a tuple descriptor representing a single TEXT or XML column */
-	tupdesc = CreateTemplateTupleDesc(1, false);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "QUERY PLAN",
-					   xml ? XMLOID : TEXTOID, -1, 0);
-
-	tstate = begin_tup_output_tupdesc(dest, tupdesc);
-	if (es.format == EXPLAIN_FORMAT_TEXT)
-		do_text_output_multiline(tstate, es.str->data);
-	else
-		do_text_output_oneline(tstate, es.str->data);
-	end_tup_output(tstate);
-	
-	pfree(es.str->data);
-}
-
-static void
-qp_ExplainOnePlan(PlannedStmt *plannedstmt, ExplainState *es,
-			   const char *queryString, ParamListInfo params)
-{
-	QueryDesc  *queryDesc;
-	instr_time	starttime;
-	double		totaltime = 0;
-	int			eflags;
-	int			instrument_option = 0;
-
-  	if (es->analyze)
-		instrument_option |= INSTRUMENT_TIMER;
-	if (es->buffers)
-		instrument_option |= INSTRUMENT_BUFFERS;
-
-	/*
-	 * Use a snapshot with an updated command ID to ensure this query sees
-	 * results of any previously executed queries.
-	 */
-	//PushUpdatedSnapshot(GetActiveSnapshot());
-	if(InvalidSnapshot)
-		PushActiveSnapshot(InvalidSnapshot);
-	else
-		PushActiveSnapshot(GetTransactionSnapshot());
-
-	/* Create a QueryDesc requesting no output */
-	queryDesc = CreateQueryDesc(plannedstmt, queryString,
-								GetActiveSnapshot(), InvalidSnapshot,
-								None_Receiver, params, instrument_option);
-	
-	INSTR_TIME_SET_CURRENT(starttime);
-
-	/* If analyzing, we need to cope with queued triggers */
-	if (es->analyze)
-		AfterTriggerBeginQuery();
-
-	/* Select execution options */
-	if (es->analyze)
-		eflags = 0;				/* default run-to-completion flags */
-	else
-		eflags = EXEC_FLAG_EXPLAIN_ONLY;
-
-	/* call ExecutorStart to prepare the plan for execution */
-	ExecutorStart(queryDesc, eflags);
-
-	/* Execute the plan for statistics if asked for */
-	if (es->analyze)
-	{
-		/* run the plan */
-		ExecutorRun(queryDesc, ForwardScanDirection, 0L);
-
-		/* We can't clean up 'till we're done printing the stats... */
-		totaltime += elapsed_time(&starttime);
-	}
-
-  	ExplainOpenGroup("Query", NULL, true, es);
-
-  	/* Create textual dump of plan tree */
-	ExplainPrintPlan(es, queryDesc);
-  	/*
-	 * If we ran the command, run any AFTER triggers it queued.  (Note this
-	 * will not include DEFERRED triggers; since those don't run until end of
-	 * transaction, we can't measure them.)  Include into total runtime.
-	 */
-	if (es->analyze)
-	{
-		INSTR_TIME_SET_CURRENT(starttime);
-		AfterTriggerEndQuery(queryDesc->estate);
-		totaltime += elapsed_time(&starttime);
-	}
-
-	/* Print info about runtime of triggers */
-	if (es->analyze)
-	{
-		ResultRelInfo *rInfo;
-		bool		show_relname;
-		int			numrels = queryDesc->estate->es_num_result_relations;
-		List	   *targrels = queryDesc->estate->es_trig_target_relations;
-		int			nr;
-		ListCell   *l;
-
-		ExplainOpenGroup("Triggers", "Triggers", false, es);
-
-		show_relname = (numrels > 1 || targrels != NIL);
-		rInfo = queryDesc->estate->es_result_relations;
-		for (nr = 0; nr < numrels; rInfo++, nr++)
-			report_triggers(rInfo, show_relname, es);
-
-		foreach(l, targrels)
-		{
-			rInfo = (ResultRelInfo *) lfirst(l);
-			report_triggers(rInfo, show_relname, es);
-		}
-
-		ExplainCloseGroup("Triggers", "Triggers", false, es);
-	}
-
-	/*
-	 * Close down the query and free resources.  Include time for this in the
-	 * total runtime (although it should be pretty minimal).
-	 */
-	INSTR_TIME_SET_CURRENT(starttime);
-
-	ExecutorEnd(queryDesc);
-
-	FreeQueryDesc(queryDesc);
-
-	PopActiveSnapshot();
-
-	/* We need a CCI just in case query expanded to multiple plans */
-	if (es->analyze)
-		CommandCounterIncrement();
-
-	totaltime += elapsed_time(&starttime);
-
-	if (es->analyze)
-	{
-		if (es->format == EXPLAIN_FORMAT_TEXT)
-			appendStringInfo(es->str, "Total runtime: %.3f ms\n",
-							 1000.0 * totaltime);
-		else
-			ExplainPropertyFloat("Total Runtime", 1000.0 * totaltime,
-								 3, es);
-	}
-
-	ExplainCloseGroup("Query", NULL, true, es);
-}
-
-/**************************************************************
- *
- *                End
- *
- *************************************************************/
- 
 /*
  * ExplainQuery -
  *	  execute an EXPLAIN command
@@ -531,7 +353,7 @@ ExplainOnePlan(PlannedStmt *plannedstmt, ExplainState *es,
 	int			eflags;
 	int			instrument_option = 0;
 
-  if (es->analyze)
+	if (es->analyze)
 		instrument_option |= INSTRUMENT_TIMER;
 	if (es->buffers)
 		instrument_option |= INSTRUMENT_BUFFERS;
@@ -546,7 +368,7 @@ ExplainOnePlan(PlannedStmt *plannedstmt, ExplainState *es,
 	queryDesc = CreateQueryDesc(plannedstmt, queryString,
 								GetActiveSnapshot(), InvalidSnapshot,
 								None_Receiver, params, instrument_option);
-	
+
 	INSTR_TIME_SET_CURRENT(starttime);
 
 	/* If analyzing, we need to cope with queued triggers */
@@ -572,11 +394,12 @@ ExplainOnePlan(PlannedStmt *plannedstmt, ExplainState *es,
 		totaltime += elapsed_time(&starttime);
 	}
 
-  ExplainOpenGroup("Query", NULL, true, es);
+	ExplainOpenGroup("Query", NULL, true, es);
 
-  /* Create textual dump of plan tree */
+	/* Create textual dump of plan tree */
 	ExplainPrintPlan(es, queryDesc);
-  /*
+
+	/*
 	 * If we ran the command, run any AFTER triggers it queued.  (Note this
 	 * will not include DEFERRED triggers; since those don't run until end of
 	 * transaction, we can't measure them.)  Include into total runtime.
@@ -1488,8 +1311,7 @@ show_qual(List *qual, const char *qlabel, Plan *plan, Plan *outer_plan,
 		return;
 
 	/* Convert AND list to explicit AND */
-	node = (Node *) make_ands_explicit(qual);		
-	
+	node = (Node *) make_ands_explicit(qual);
 
 	/* Set up deparsing context */
 	context = deparse_context_for_plan((Node *) plan,
@@ -1516,7 +1338,6 @@ show_scan_qual(List *qual, const char *qlabel,
 
 	useprefix = (outer_plan != NULL || IsA(scan_plan, SubqueryScan) ||
 				 es->verbose);
-	
 	show_qual(qual, qlabel, scan_plan, outer_plan, useprefix, es);
 }
 

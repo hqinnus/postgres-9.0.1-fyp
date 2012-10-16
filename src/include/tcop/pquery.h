@@ -36,10 +36,7 @@ extern void PortalSetResultFormat(Portal portal, int nFormats,
 extern bool PortalRun(Portal portal, long count, bool isTopLevel,
 		  DestReceiver *dest, DestReceiver *altdest,
 		  char *completionTag);
-extern bool qp_PortalRun(Portal portal, long count, bool isTopLevel,
-		  DestReceiver *dest, DestReceiver *altdest,
-		  char *completionTag, bool showplan);
-		  
+
 extern long PortalRunFetch(Portal portal,
 			   FetchDirection fdirection,
 			   long count,

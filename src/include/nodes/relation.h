@@ -22,44 +22,6 @@
 
 
 /*
- * Type "MockPath" is used when we create a mock path of query plan statement
- *
- */
-
-typedef struct MockPath
-{
-	NodeTag		type;
-
-	NodeTag		pathtype;		/* tag identifying scan/join method */
-	
-	Node  *quals; /* qual owned by the mock path node */
-
-  /* RangeTblRef of the relation
-   * To fetch the rangeTblEntry of the relation use rt_fectch() fucntion
-   */
-	Node* rtr; 
-	/* namespace for relation */
-	List* relnamespace;
-	/* namespace for columns */
-	RangeTblEntry* varnamespace;
-	
-	/* we need lmp and rmp for join mock path */
-	struct MockPath *lmp;
-	struct MockPath *rmp;
-	
-	Node* indexCol;
-	
-	/* we need a bmindexscan list */
-	List* bmindexscanlist;
-	
-	/* to record if there is join relations and outer joins */
-	bool hasJoinRTEs;
-	bool hasOuterJoins;
-	
-} MockPath;
-
-
-/*
  * Relids
  *		Set of relation identifiers (indexes into the rangetable).
  */

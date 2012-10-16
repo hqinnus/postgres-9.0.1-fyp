@@ -43,9 +43,6 @@ int			geqo_threshold;
 /* Hook for plugins to replace standard_join_search() */
 join_search_hook_type join_search_hook = NULL;
 
-static RelOptInfo*path_map_recursive(PlannerInfo *root, MockPath *mockpath, int* rti);
-static void qp_set_base_rel_pathlists(PlannerInfo *root, RelOptInfo* rel, MockPath *mockpath);
-
 
 static void set_base_rel_pathlists(PlannerInfo *root);
 static void set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
@@ -79,103 +76,7 @@ static void subquery_push_qual(Query *subquery,
 static void recurse_push_qual(Node *setOp, Query *topquery,
 				  RangeTblEntry *rte, Index rti, Node *qual);
 
-/*****************************************************************************
- *
- *                     New Functions
- *
- ****************************************************************************/
- /*
- * path_map
- *	  Map the mockpath into a real path
- */
-RelOptInfo *
-path_map(PlannerInfo *root, MockPath *mockpath)
-{
-	
-	/* recursively map the mockpath
-	 * index of simple_rte_array starts from 1
-	 * index of simple_rel_array starts from 1
-	 */
-	int rti =1;
-	return path_map_recursive(root, mockpath,&rti);
 
-}
-
-/* rti denotes the index of base relation in jointree */
-static RelOptInfo*
-path_map_recursive(PlannerInfo *root, MockPath *mockpath, int* rti)
-{
-	RelOptInfo *rel;
-	
-	if(mockpath->rmp ==NULL){
-		/* this mock corresponds to a base relation */
-		rel = root->simple_rel_array[*rti];
-		Assert(rel!=NULL && rel->relid ==*rti); /* sanity check on array */
-		qp_set_base_rel_pathlists(root, rel, mockpath);
-		(*rti)++;
-		return rel;
-	}else{
-		RelOptInfo * lopr = path_map_recursive(root, mockpath->lmp, rti);
-		RelOptInfo * ropr = path_map_recursive(root, mockpath->rmp, rti);
-
-		Assert(have_relevant_joinclause(root, lopr, ropr)||
-					!bms_overlap(lopr->relids, ropr->relids));
-		rel = qp_make_join_rel(root, lopr, ropr,mockpath);
-		
-		set_cheapest(rel);
-		return rel;
-	}
-}
-/*
- * qp_set_base_rel_pathlists
- *	  Finds all paths available for scanning each base-relation entry.
- *	  Sequential scan and any available indices are considered.
- *	  Each useful path is attached to its relation's 'pathlist' field.
- */
-static void
-qp_set_base_rel_pathlists(PlannerInfo *root, RelOptInfo* rel, MockPath *mockpath)
-{
-
-	/* must be a plain relation */
-	Assert(rel->rtekind == RTE_RELATION);
-	/*
-	 * Test any partial indexes of rel for applicability.  We must do this
-	 * first since partial unique indexes can affect size estimates.
-	 */
-	check_partial_indexes(root, rel);
-	/* Mark rel with estimated output rows, width, etc */
-	set_baserel_size_estimates(root, rel);
-	
-	/*
-	 * Generate paths and add them to the rel's pathlist.
-	 *
-	 * Note: add_path() will discard any paths that are dominated by another
-	 * available path, keeping only those paths that are superior along at
-	 * least one dimension of cost or sortedness.
-	 */
-	switch(mockpath->pathtype){
-  	case T_SeqScanOperator:
-  		add_path(rel, create_seqscan_path(root,rel));
-  		break;
-  	
-  	case T_IndexScanOperator:
-  		qp_create_index_paths(root, rel, mockpath->indexCol);
-  		break;
-  	
-  	case T_BMHeapScanOperator:
-  		qp_create_bmheap_paths(root,rel,mockpath);
-  		break;
-  	
-  	default:
-  		elog(ERROR, "unconsidered case @ line 171. <allpaths>");
-  }
-  set_cheapest(rel);
-}
-/*****************************************************************************
- *
- *                     End
- *
- ****************************************************************************/
 /*
  * make_one_rel
  *	  Finds all possible access paths for executing a query, returning a

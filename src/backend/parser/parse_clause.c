@@ -92,128 +92,6 @@ static Node *transformFrameOffset(ParseState *pstate, int frameOptions,
 					 Node *clause);
 
 
-/*********************************************************************
- *
- *                    New Functions
- *
- *********************************************************************/
-/* transformRelationName 
- *		interprets relation and adds it into the pstate->rtable
- * 	  
- */
-void 
-transformRelationName(ParseState *pstate, Node *n, MockPath *mockpath)
-{
-	RangeTblEntry *rte;
-	int rtindex;
-	List *relnamespace;
-	Relids containedRel;
-	
-	/* It must be a RangeVar */
-	Assert(IsA(n, RangeVar));
-	
-	n= transformFromClauseItem( pstate, 
-															n,
-															&rte,
-															&rtindex,
-															&relnamespace,
-															&containedRel);
-	
-	checkNameSpaceConflicts(pstate, pstate->p_relnamespace, relnamespace);
-	/* add it into pstate */
-	pstate->p_joinlist = lappend(pstate->p_joinlist,n);
-	pstate->p_relnamespace = list_concat(	pstate->p_relnamespace,
-																				relnamespace);
-	pstate->p_varnamespace = lappend(pstate->p_varnamespace, rte);
-	/* add it into mock path*/
-	mockpath->rtr = n;
-	mockpath->relnamespace = relnamespace;
-	mockpath->varnamespace = rte;
-	
-	bms_free(containedRel);
-}
-
-/*
- * transformQualExpr -
- *	  Process the qualification expression in query plan operators.
- *
- * These qualification expression are constraints that will be imposed
- * when carrying out a particular operation.
- */
-void
-transformQualExpr(ParseState *pstate, Node *clause, MockPath *mockpath)
-{
-	Node     *quals = NULL;
-
-  /* if there is no qulification expression, we need do nothing */
-	if (clause == NULL)
-		return;
-
-  quals = transformQualExprRec(pstate, clause);
-
-  quals = coerce_to_boolean(pstate, quals, "QueryPlan"); 
-	
-	/* add this quals into mockpath */
-	mockpath->quals = quals;
-}
-
-/*
- *The clause is a complex tree structure, need to 
- *recursively process qualification expressions
- */
-Node* transformQualExprRec(ParseState *pstate, Node *clause)
-{
-  Node *lexpr ;
-  Node *rexpr ;
-  A_Expr_Kind kind;
-  Node *lqual = NULL;
-  Node *rqual = NULL;
-  Node *quals = NULL;
-
-  Assert(IsA(clause, A_Expr));
-
-  kind = ((A_Expr *)clause)->kind;
-  
-  if(kind == AEXPR_AND || kind == AEXPR_OR){
-    lexpr = ((A_Expr *)clause)->lexpr;
-    rexpr = ((A_Expr *)clause)->rexpr;
-
-    lqual = transformQualExprRec(pstate, lexpr);
-    rqual = transformQualExprRec(pstate, rexpr);
-
-    lqual = coerce_to_boolean(pstate, lqual, "WHERE");
-    rqual = coerce_to_boolean(pstate, rqual, "WHERE");
-
-    if(kind == AEXPR_AND){
-       quals = (Node *)makeBoolExpr(AND_EXPR, list_make2(lqual, rqual), NULL);
-    }else{
-       quals = (Node *)makeBoolExpr(OR_EXPR, list_make2(lqual,rqual), NULL);
-    }
-  }else{
-    quals = transformExpr(pstate, (void *)clause);  
-  }
-  quals = coerce_to_boolean(pstate, quals, "WHERE");
-
-  return quals;
-}
-
-Node*
-transformJoinColumn(ParseState *pstate, Node *n)
-{
-	Node *col;
-	/* It must be a ColumnRef */
-	Assert(IsA(n,ColumnRef));
-	
-	col = transformExpr(pstate, n);
-	
-	return col;
-}
-/***********************************************************************
- *
- *                    End
- *
- ***********************************************************************/
-	
 /*
  * transformFromClause -
  *	  Process the FROM clause and add items to the query's range table,
@@ -247,13 +125,12 @@ transformFromClause(ParseState *pstate, List *frmList)
 		int			rtindex;
 		List	   *relnamespace;
 		Relids		containedRels;
-	  
-	  n = transformFromClauseItem(pstate, n,
+
+		n = transformFromClauseItem(pstate, n,
 									&rte,
 									&rtindex,
 									&relnamespace,
 									&containedRels);
-		
 		checkNameSpaceConflicts(pstate, pstate->p_relnamespace, relnamespace);
 		pstate->p_joinlist = lappend(pstate->p_joinlist, n);
 		pstate->p_relnamespace = list_concat(pstate->p_relnamespace,
@@ -1275,8 +1152,9 @@ transformWhereClause(ParseState *pstate, Node *clause,
 		return NULL;
 
 	qual = transformExpr(pstate, clause);
+
 	qual = coerce_to_boolean(pstate, qual, constructName);
-	
+
 	return qual;
 }
 
